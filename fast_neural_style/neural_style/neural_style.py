@@ -29,7 +29,12 @@ def check_paths(args):
 
 
 def train(args):
-    device = torch.device("cuda" if args.cuda else "cpu")
+    if args.cuda:
+        device = torch.device("cuda")
+    elif args.mps:
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -131,7 +136,7 @@ def stylize(args):
     content_image = content_image.unsqueeze(0).to(device)
 
     if args.model.endswith(".onnx"):
-        output = stylize_onnx_caffe2(content_image, args)
+        output = stylize_onnx(content_image, args)
     else:
         with torch.no_grad():
             style_model = TransformerNet()
@@ -142,31 +147,40 @@ def stylize(args):
                     del state_dict[k]
             style_model.load_state_dict(state_dict)
             style_model.to(device)
+            style_model.eval()
             if args.export_onnx:
                 assert args.export_onnx.endswith(".onnx"), "Export model file should end with .onnx"
-                output = torch.onnx._export(style_model, content_image, args.export_onnx).cpu()
+                output = torch.onnx._export(
+                    style_model, content_image, args.export_onnx, opset_version=11,
+                ).cpu()            
             else:
                 output = style_model(content_image).cpu()
     utils.save_image(args.output_image, output[0])
 
 
-def stylize_onnx_caffe2(content_image, args):
+def stylize_onnx(content_image, args):
     """
-    Read ONNX model and run it using Caffe2
+    Read ONNX model and run it using onnxruntime
     """
 
     assert not args.export_onnx
 
-    import onnx
-    import onnx_caffe2.backend
+    import onnxruntime
 
-    model = onnx.load(args.model)
+    ort_session = onnxruntime.InferenceSession(args.model)
 
-    prepared_backend = onnx_caffe2.backend.prepare(model, device='CUDA' if args.cuda else 'CPU')
-    inp = {model.graph.input[0].name: content_image.numpy()}
-    c2_out = prepared_backend.run(inp)[0]
+    def to_numpy(tensor):
+        return (
+            tensor.detach().cpu().numpy()
+            if tensor.requires_grad
+            else tensor.cpu().numpy()
+        )
 
-    return torch.from_numpy(c2_out)
+    ort_inputs = {ort_session.get_inputs()[0].name: to_numpy(content_image)}
+    ort_outs = ort_session.run(None, ort_inputs)
+    img_out_y = ort_outs[0]
+
+    return torch.from_numpy(img_out_y)
 
 
 def main():
@@ -215,10 +229,11 @@ def main():
                                  help="path for saving the output image")
     eval_arg_parser.add_argument("--model", type=str, required=True,
                                  help="saved model to be used for stylizing the image. If file ends in .pth - PyTorch path is used, if in .onnx - Caffe2 path")
-    eval_arg_parser.add_argument("--cuda", type=int, required=True,
-                                 help="set it to 1 for running on GPU, 0 for CPU")
+    eval_arg_parser.add_argument("--cuda", type=int, default=False,
+                                 help="set it to 1 for running on cuda, 0 for CPU")
     eval_arg_parser.add_argument("--export_onnx", type=str,
                                  help="export ONNX model to a given file")
+    eval_arg_parser.add_argument('--mps', action='store_true', default=False, help='enable macOS GPU training')
 
     args = main_arg_parser.parse_args()
 
@@ -228,6 +243,8 @@ def main():
     if args.cuda and not torch.cuda.is_available():
         print("ERROR: cuda is not available, try running on CPU")
         sys.exit(1)
+    if not args.mps and torch.backends.mps.is_available():
+        print("WARNING: mps is available, run with --mps to enable macOS GPU")
 
     if args.subcommand == "train":
         check_paths(args)

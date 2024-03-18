@@ -35,7 +35,7 @@ class Policy(nn.Module):
     r"""
     Borrowing the ``Policy`` class from the Reinforcement Learning example.
     Copying the code to make these two examples independent.
-    See https://github.com/pytorch/examples/tree/master/reinforcement_learning
+    See https://github.com/pytorch/examples/tree/main/reinforcement_learning
     """
     def __init__(self, batch=True):
         super(Policy, self).__init__()
@@ -75,7 +75,7 @@ class Observer:
         r"""
         Run one episode of n_steps.
 
-        Arguments:
+        Args:
             agent_rref (RRef): an RRef referencing the agent object.
             n_steps (int): number of steps in this episode
         """
